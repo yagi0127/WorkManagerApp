@@ -54,16 +54,29 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-class Mainapp (tk.Tk):
+
+
+class Shift_Dialogue(tk.Toplevel):
+    def __init__ (self, db):
+        super().__init__()
+        self.db = db
+        
+
+class MainApp (tk.Tk):
     def __init__(self):
         super().__init__()
+        #タイトルとウィンドウサイズの指定
         self.title("バイト勤怠管理アプリ")
         self.geometry("1000x700")
+        #カレンダーを日曜始まりに設定
         calendar.setfirstweekday(calendar.SUNDAY)
+        #日付の設定
         self.current_data = datetime.now()
         self.year = self.current_data.year
         self.month = self.current_data.month
-
+        #データベースの生成
+        self.db = DatabaseManager(DB_NAME)
+        #ウィンドウの中身を作っていく
         self.create_layout()
         self.draw_calendar()
 
@@ -146,7 +159,7 @@ class Mainapp (tk.Tk):
             self.cal_frame.grid_rowconfigure(i, weight=1)
 
 
-
+    #メインウィンドウの大まかな設定
     def create_layout(self):
         #画面を左右に分ける
         self.left_panel = tk.Frame(self, width=250, bg="#c1c1c1", padx=10,pady=10)
@@ -168,16 +181,32 @@ class Mainapp (tk.Tk):
         self.cal_frame = tk.Frame(self.right_panel, bg="#ffffff")
         self.cal_frame.pack(fill="both", expand=True)
 
+    
+    def refresh_colender(self):
+        self.draw_calendar()
+        
 
+    def enter_shift(self, db):
+        Shift_Dialogue(self, db)
+        pass
 
     def prev_month(self):
-        pass
-    
+        if self.month == 1:
+            self.month = 12
+            self.year -= 1
+        else:
+            self.month -= 1
+        self.refresh_colender()
+
+
     def next_month(self):
-        pass
+        if self.month == 12:
+            self.month = 1
+            self.year += 1
+        else:
+            self.month += 1
+        self.refresh_colender()
 
 if __name__ == "__main__":
-    # db = DatabaseManager(DB_NAME)
-    # print("データベースとテーブルが完成したよ")
-    app = Mainapp()
+    app = MainApp()
     app.mainloop()
