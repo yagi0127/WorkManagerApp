@@ -1,34 +1,27 @@
-#grid,packの使い分けの違い。
-#基本親ウィジットの中で両方を混ぜるのは危険。
-#ただ今回は親（Fream）を分けてるかってるのでOK
-#全体の骨格はとカレンダー本体は「grid」
-#左パネルと右上のヘッダーは「pack」
-#以下設置方法と得意な分野。
-#・骨格と表（カレンダー）: grid
-#・縦積み、横並びの“流れ”: pack
-#・座標指定のガチ固定: place（今回は使ってない）
-
-
 import tkinter as tk
 from tkinter import ttk, messagebox
-import calendar
 import sqlite3
+import calendar
 from datetime import datetime, timedelta
 
-DB_NAME = "work_schedule.db"
+# --- 設定・定数 ---
+DB_NAME = 'work_schedule.db'
+WEEK_DAYS = ['日', '月', '火', '水', '木', '金', '土']
 
+# --- データベース管理クラス ---
 class DatabaseManager:
-    def __init__(self,db_name):
-        #すべてのdefで使えるようself化
+    def __init__(self, db_name):
         self.db_name = db_name
+        self.needs_pay_backfill = False
         self.init_db()
 
-    #最初にデータベースを実体化させるところ
     def init_db(self):
+        """データベースとテーブルの初期化"""
         conn = sqlite3.connect(self.db_name)
-        cur = conn.cursor()
-
-        cur.execute('''
+        cursor = conn.cursor()
+        
+        # シフト・実績テーブル
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS shifts (
                 date TEXT PRIMARY KEY,
                 start_plan TEXT,
@@ -42,32 +35,37 @@ class DatabaseManager:
             )
         ''')
 
-
-        #キーバリュー形式
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-            )
+        # 既存DBに日別支給額カラムがない場合は追加
+        cursor.execute("PRAGMA table_info(shifts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'daily_pay' not in columns:
+            cursor.execute("ALTER TABLE shifts ADD COLUMN daily_pay INTEGER DEFAULT 0")
+            self.needs_pay_backfill = True
+        else:
+            cursor.execute("SELECT COUNT(*) FROM shifts WHERE daily_pay IS NULL")
+            if cursor.fetchone()[0] > 0:
+                self.needs_pay_backfill = True
         
+        # 設定テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
         ''')
-                
-        # デフォルト設定（これがないと計算できないからね！）
+        
+        # デフォルト設定の投入（なければ）
         default_settings = {
             'hourly_wage': '1000',
-            'night_rate': '1.25',
-            'holiday_add': '0'
+            'night_rate': '1.25',  # 深夜割増倍率
+            'holiday_add': '0'     # 休日手当（時給にプラス円）
         }
-        
-        for key, value in default_settings.items():
-            # INSERT OR IGNORE: データがなければ入れる、あれば何もしない
-            cur.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
-        # ----------------------
-
+        for k, v in default_settings.items():
+            cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (k, v))
+            
         conn.commit()
         conn.close()
 
-    # settingテーブルから設定値を1こ取る
     def get_setting(self, key):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
@@ -75,8 +73,7 @@ class DatabaseManager:
         result = cursor.fetchone()
         conn.close()
         return result[0] if result else None
-    
-    # ssettingテーブルの設定値を更新する
+
     def update_setting(self, key, value):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
@@ -84,7 +81,6 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    # shiftsテーブルに1日分の勤務データを保存する
     def upsert_shift(self, date, s_plan, e_plan, s_act, e_act, brk, is_hol, memo, daily_pay=0):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
@@ -96,20 +92,15 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    # 指定した日付の行を1件取る
-    def get_shift(self,date):
+    def get_shift(self, date):
         conn = sqlite3.connect(self.db_name)
-        #設定の変更みたいなもの。   
-        # 基本は行の要素を取得したあと、インデックスを指定して取得するが
-        # この指定をすることでカラムのタイトルも取得することができタイトル指定で値を取得できるようになる
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM shifts WHERE date = ?', (date,))
         row = cursor.fetchone()
         conn.close()
         return row
-    
-    # 期間で複数件まとめて取る（start〜end）
+
     def get_shifts_by_range(self, start_date, end_date):
         conn = sqlite3.connect(self.db_name)
         conn.row_factory = sqlite3.Row
@@ -119,7 +110,6 @@ class DatabaseManager:
         conn.close()
         return rows
 
-    # 全部取る。返り値は Row のリスト
     def get_all_shifts(self):
         conn = sqlite3.connect(self.db_name)
         conn.row_factory = sqlite3.Row
@@ -129,7 +119,6 @@ class DatabaseManager:
         conn.close()
         return rows
 
-    # 複数日の daily_pay をまとめて更新する。
     def update_daily_pays(self, pay_by_date):
         if not pay_by_date:
             return
@@ -138,7 +127,7 @@ class DatabaseManager:
         cursor.executemany('UPDATE shifts SET daily_pay = ? WHERE date = ?', pay_by_date)
         conn.commit()
         conn.close()
-    # 「今日以降で、予定が入ってる最初の日」を取る
+    
     def get_next_shift(self):
         today = datetime.now().strftime('%Y-%m-%d')
         conn = sqlite3.connect(self.db_name)
@@ -154,7 +143,6 @@ class DatabaseManager:
         conn.close()
         return row
 
-    # 指定日付のレコードを削除する
     def delete_shift(self, date):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
@@ -165,18 +153,15 @@ class DatabaseManager:
 # --- 給与計算ロジック（最適化済み） ---
 class PayCalculator:
     def __init__(self, db):
-        # 設定値を読み込み：１基本時給　２深夜割増　３休日追加時給
         self.db = db
         self.hourly_wage = int(db.get_setting('hourly_wage'))
         self.night_rate = float(db.get_setting('night_rate'))
         self.holiday_add = int(db.get_setting('holiday_add'))
 
-     # 深夜料金が発生する時間がどれくらい重なってるかの計算
     def _get_overlap_minutes(self, start_dt, end_dt, range_start, range_end):
         """指定された期間(start_dt ~ end_dt)と、特定の時間帯(range)の重複分数を返す"""
         latest_start = max(start_dt, range_start)
         earliest_end = min(end_dt, range_end)
-        # 差分を秒で取得、その後分に変換し返す。
         delta = (earliest_end - latest_start).total_seconds()
         if delta > 0:
             return delta / 60
@@ -192,7 +177,6 @@ class PayCalculator:
 
         fmt = '%H:%M'
         try:
-            # 文字列をdatetimeに変換
             date_base = datetime.strptime(shift_row['date'], '%Y-%m-%d')
             start_dt = datetime.strptime(shift_row['start_actual'], fmt)
             end_dt = datetime.strptime(shift_row['end_actual'], fmt)
@@ -267,9 +251,6 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(self, text="基本時給 (円):").pack(**pad)
         self.wage_var = tk.StringVar(value=self.db.get_setting('hourly_wage'))
         tk.Entry(self, textvariable=self.wage_var).pack(**pad)
-        # textvariable=self.wage_var：Entryの中身と変数を同期させる
-        # これにより初期値の設定や変数の中身変更などの手間が省ける。
-        # pack(**pad)：事前に設定した引数を用いて渡す式
 
         tk.Label(self, text="深夜割増倍率 (例: 1.25):").pack(**pad)
         self.night_var = tk.StringVar(value=self.db.get_setting('night_rate'))
@@ -291,7 +272,6 @@ class SettingsDialog(tk.Toplevel):
             self.db.update_setting('night_rate', self.night_var.get())
             self.db.update_setting('holiday_add', self.holiday_var.get())
 
-            #　給与の再計算（重要）
             if hasattr(self.master, "recompute_all_daily_pay"):
                 self.master.recompute_all_daily_pay()
                 self.master.update_stats()
@@ -301,8 +281,8 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("エラー", "数値で入力してください")
 
-
-class Shift_Dialogue(tk.Toplevel):
+# --- シフト入力ダイアログ ---
+class ShiftDialog(tk.Toplevel):
     def __init__(self, parent, db, date_str, on_close_callback):
         super().__init__(parent)
         self.title(f"{date_str} の詳細")
@@ -315,7 +295,6 @@ class Shift_Dialogue(tk.Toplevel):
         self.create_widgets()
 
     def create_widgets(self):
-        # シフトデータベースに数値があればそれを表示させる
         sp = self.shift_data['start_plan'] if self.shift_data else ""
         ep = self.shift_data['end_plan'] if self.shift_data else ""
         sa = self.shift_data['start_actual'] if self.shift_data else ""
@@ -334,18 +313,6 @@ class Shift_Dialogue(tk.Toplevel):
         entry_sp = tk.Entry(lf_plan, textvariable=self.sp_var, width=10)
         entry_sp.grid(row=0, column=1, **pad)
         entry_sp.bind('<KeyRelease>', self.auto_colon)
-
-        # bindについて
-        # 何かのイベントが起きたら指定された関数を呼ぶというもの
-        # widget.bind("<KeyRelease>", func)
-        # この場合はそのwidget上でキーを話した瞬間に関数が呼ばれる
-        # また、呼び出し側で何もしてなくてもTkinterが勝手にeventオブジェクトを作り、
-        # func(event)の形で関数を呼ぶ。
-        # event内には例として以下の情報がある
-        # event.widget どのウィジェットで起きたか（どのEntryか）
-        # event.keysym 押されたキー（BackSpaceとかReturnとか）
-        # event.char 入力された文字（イベント種類による）
-        # event.x, event.y マウス系イベントなら座標 
 
         tk.Label(lf_plan, text="終了 (HH:MM)").grid(row=1, column=0, **pad)
         self.ep_var = tk.StringVar(value=ep)
@@ -387,26 +354,18 @@ class Shift_Dialogue(tk.Toplevel):
         tk.Button(btn_frame, text="保存", command=self.save, bg="#4CAF50", fg="white", width=10).pack(side='left', padx=5)
         tk.Button(btn_frame, text="削除", command=self.delete, bg="#f44336", fg="white", width=10).pack(side='left', padx=5)
 
-    # 時間入力とその成型（時刻の：を入れるやつ）
-    # キーボードを入力するたびに呼ばれるため
     def auto_colon(self, event):
-        #消す動作の時に数値が２個になったらなにもしない
         if event.keysym == 'BackSpace': return
-        #ウェジットを読み込みその中にあるテキストの数で処理を判断。
         entry = event.widget
         text = entry.get()
         if len(text) == 2 and text.isdigit():
             entry.insert(tk.END, ":")
 
-    # 時刻の判定
     def validate_time(self, time_str):
-        # 空白はOK
         if not time_str: return True
         try:
-            # 与えられた時間が"HH:MM"形式かつ存在する時刻化を判定
             datetime.strptime(time_str, '%H:%M')
             return True
-        # 違った場合valueErrorが出るのでちゃんと処理してfalseで返す。
         except ValueError:
             return False
 
@@ -442,197 +401,43 @@ class Shift_Dialogue(tk.Toplevel):
             self.db.delete_shift(self.date_str)
             self.callback()
             self.destroy()
-        
 
-class MainApp (tk.Tk):
+# --- メインアプリケーション ---
+class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.title("バイト勤務管理システム")
+        self.geometry("1000x700") # 初期サイズ
+        self.minsize(800, 600)    # 最小サイズ制限
+        
+        # 【重要】リサイズ対応設定
+        self.columnconfigure(1, weight=1) # 右側パネルを伸縮可能に
+        self.rowconfigure(0, weight=1)    # 上下にも伸縮可能に
 
-        #タイトルとウィンドウサイズの指定
-        self.title("バイト勤怠管理アプリ")
-        self.geometry("1000x700")
-
-        #リサイズ対応設定。これがないとstickyをしても意味がない
-        self.columnconfigure(1, weight=1) # rootのgridの1列目は余った横幅を広げて伸びる設定
-        self.rowconfigure(0, weight=1)    # rootのgridの0行目が余った上下幅を広げて伸びる設定
-        #wegit:「余ったスペースをどういう比率で配るか」の比率。0だと配られない。1以上だと配られる
-
-        #カレンダーを日曜始まりに設定
         calendar.setfirstweekday(calendar.SUNDAY)
-        
-        #日付の設定
-        self.current_data = datetime.now()
-        self.year = self.current_data.year
-        self.month = self.current_data.month
-        
-        #データベースの生成
+
         self.db = DatabaseManager(DB_NAME)
+        if self.db.needs_pay_backfill:
+            self.recompute_all_daily_pay()
         
-        #ウィンドウの中身を作っていく
+        self.current_date = datetime.now()
+        self.year = self.current_date.year
+        self.month = self.current_date.month
+
         self.create_layout()
-        self.draw_calendar()
-        #データベース反映
         self.refresh_all()
 
-    #カレンダーを作る
-    def draw_calendar(self):
-        #表示されてるものを一つずつ読んで消していく。（子を全部殺す）
-        for widget in self.cal_frame.winfo_children():
-            widget.destroy()
-
-        #ヘッダーのタイトル（年月）を更新する。
-        #create_layoutのlbl_cal_titileがある前提なのでそっちを作っておく
-        self.lbl_cal_title.config(text=f"{self.year}年 {self.month}月")
-
-        #曜日表示
-        week_days = ["日", "月", "火", "水", "木", "金", "土"]
-
-        #繰り返しで日付表示＋色分け enumerateは要素とともにインデックスも得ることができる
-        for i, day_name in enumerate(week_days):
-            #インデックスの値をもとに色決め
-            fg_color = "black"
-            if i == 0: fg_color = 'red'
-            if i == 6: fg_color = 'blue'
-
-            #gridで表形式の表示。stickyは枠いっぱいに広がってという意味
-            lbl = tk.Label(self.cal_frame, text=day_name, bg="#ddd", fg=fg_color)
-            lbl.grid(row=0, column=i, sticky="nsew")
-        
-        #こっちは親が用意する領域を横の方向に均等に枠いっぱいに広げてという意味
-        for i in range(7):
-            self.cal_frame.grid_columnconfigure(i, weight=1)
-
-        
-        #ここから日付ボタンを作っていく
-        #その月の週ごとのカレンダーを取得できる
-        cal_data = calendar.monthcalendar(self.year, self.month)
-
-        #比較用の今日の日付をここで準備。strftimeで取得する時間データを指定通りに整える。
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-        # --- 追加：この月のシフトをまとめて取得して辞書化（date -> row） ---
-        start_date = f"{self.year}-{self.month:02d}-01"
-        _, last_day = calendar.monthrange(self.year, self.month)
-        end_date = f"{self.year}-{self.month:02d}-{last_day:02d}"
-        month_rows = self.db.get_shifts_by_range(start_date, end_date)  # Rowの配列
-        shift_map = {row["date"]: row for row in month_rows}
-        # ------------------------------------------------------------
-
-        #二重ループでボタンを設置していく
-        for r, week in enumerate(cal_data):
-            #曜日と日付を取り出す
-            for c, day in enumerate(week):
-                #日付がはいいてないところは０なのでそれをスキップ
-                if day == 0:
-                    continue
-
-                #現在の日付を比較用に整形する
-                current_date_str = f"{self.year}-{self.month:02d}-{day:02d}"
-
-                # --- 追加：その日のシフト行を取得 ---
-                shift = shift_map.get(current_date_str)
-                # -------------------------------
-
-                #日付ボタンの基本デザインを指定
-                bg_color = "white"
-                fg_color = "black"
-                font_style = ("Arial", 9)
-                relief_style = "flat" #枠線なし
-                border_width = 1
-
-                #土日の場合背景色を変える
-                if c == 0: bg_color = "#FFEBEE"
-                if c == 6: bg_color = "#E3F2FD"
-
-                # --- 追加：表示テキスト（予/実）と色を上書き ---
-                # デフォは日付だけ
-                btn_text = str(day)
-
-                if shift:
-                    sp = (shift["start_plan"] or "").strip()
-                    ep = (shift["end_plan"] or "").strip()
-                    sa = (shift["start_actual"] or "").strip()
-                    ea = (shift["end_actual"] or "").strip()
-
-                    # 実績があれば「実」を優先
-                    if sa != "" and ea != "":
-                        btn_text = f"{day}\n実 {sa}\n～{ea}"
-                        bg_color = "#C8E6C9"  # 実績：緑
-                    # 実績が無くて予定があれば「予」
-                    elif sp != "":
-                        btn_text = f"{day}\n予 {sp}\n～{ep}"
-                        bg_color = "#BBDEFB"  # 予定：青
-                # ------------------------------------------------
-
-                #もし今日と現在の日付が一致したらデザインを変更
-                if current_date_str == today_str:
-                    # 今日を目立たせたいので枠を強める
-                    if not shift:
-                        bg_color = "#FFF9C4"
-                    fg_color = "red"
-                    font_style = ("Arial", 10, "bold")
-                    relief_style = "solid"
-                    border_width = 1.5
-
-                #ボタンを作っていく。テキストに日付を入れて左上から詰めていく
-                btn = tk.Button(
-                    self.cal_frame, text=btn_text, bg=bg_color,
-                    fg=fg_color, font=font_style, relief=relief_style, 
-                    bd=border_width, anchor="nw",
-                    justify="left",
-                    command=lambda d=current_date_str: self.open_shift_dialog(d)
-                )
-                #設置するときは表形式のgrid。ただ一行目は曜日に使ってるので２行目から設置する。
-                btn.grid(row=r+1, column=c, sticky="nsew", padx=1, pady=1)
-
-
-        #横方向は曜日のラベルでやってるので、次は縦方向に週の数だけ均等に枠いっぱい広げる
-        for i in range(1, len(cal_data) + 1): #1は曜日のラベルの分
-            self.cal_frame.grid_rowconfigure(i, weight=1)
-
-
-
-    def refresh_all(self):
-        self.draw_calendar()
-        self.update_stats()
-        self.update_next_shift()
-
-    def open_shift_dialog(self, date_str):
-        Shift_Dialogue(self,self.db, date_str,self.refresh_all)
-        # 関数はクラスを真体で持ってくことができる。ただ（）はつけない。
-        # self.refresh_all 関数を渡す（あとで呼べる）
-        # self.refresh_all() 今ここで実行して、その戻り値を渡す（だいたい None）
-
-    def open_settings(self):
-        SettingsDialog(self, self.db)
-
-    #メインウィンドウの大まかな設定
     def create_layout(self):
+        # --- 左パネル（情報・設定） 固定幅 ---
+        self.left_panel = tk.Frame(self, width=250, bg='#f0f0f0', padx=10, pady=10)
+        self.left_panel.grid(row=0, column=0, sticky='ns') # packからgridに変更し、上下追従
+        self.left_panel.pack_propagate(False)
 
-        #左パネルのフレームの設定（設定、情報）固定幅
-        self.left_panel = tk.Frame(self, width=250, bg="#f0f0f0",padx=10,pady=10)
-        self.left_panel.grid(row=0, column=0, sticky="ns")#sticky:どこ側に寄せるか
-        self.left_panel.pack_propagate(False)#勝手なサイズ調節を消すやつ。
+        # --- 右パネル（カレンダー） 可変幅 ---
+        self.right_panel = tk.Frame(self, bg='white', padx=10, pady=10)
+        self.right_panel.grid(row=0, column=1, sticky='nsew') # 全方向に追従
 
-        #右パネルのフレームの設定（カレンダー）可変幅
-        self.right_panel = tk.Frame(self,bg="#dddddd", padx=10, pady=10)
-        self.right_panel.grid(row=0, column=1, sticky="nsew")
-
-        #右側のフレーム
-        header_frame = tk.Frame(self.right_panel, bg="#ffffff")
-        header_frame.pack(fill="x",pady=(0,10))
-        
-        #右上のヘッダーの設定
-        tk.Button(header_frame,text="前月", command=self.prev_month).pack(side="left")
-        self.lbl_cal_title = tk.Label(header_frame, text="", font=("Arial", 16, "bold"), bg="#ffffff")
-        self.lbl_cal_title.pack(side="left", expand=True)
-        tk.Button(header_frame, text="次月", command=self.next_month).pack(side="right")
-
-        #カレンダーを置くフレームの設定
-        self.cal_frame = tk.Frame(self.right_panel, bg="#ffffff")
-        self.cal_frame.pack(fill="both", expand=True)
-
-        #左パネルの中身
+        # 左パネルの中身
         tk.Label(self.left_panel, text="勤務情報", font=('Arial', 14, 'bold'), bg='#f0f0f0').pack(pady=(0, 20))
         
         self.lbl_next_shift_title = tk.Label(self.left_panel, text="【次回出勤】", bg='#f0f0f0', fg='#555')
@@ -641,7 +446,6 @@ class MainApp (tk.Tk):
         self.lbl_next_shift.pack(anchor='w', pady=(0, 20))
 
         tk.Frame(self.left_panel, height=2, bd=1, relief='sunken').pack(fill='x', pady=10)
-        #これらのフレームは高さをめっちゃ低くした枠線付きの四角形を作って仕切りの直線にしてるって感じ。
 
         self.create_stat_label("今月の稼ぎ", "monthly_pay")
         self.create_stat_label("今年の稼ぎ", "yearly_pay")
@@ -651,87 +455,144 @@ class MainApp (tk.Tk):
 
         tk.Button(self.left_panel, text="⚙ 時給・割増設定", command=self.open_settings).pack(fill='x')
 
+        # 右パネルの中身
+        header_frame = tk.Frame(self.right_panel, bg='white')
+        header_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Button(header_frame, text="<< 前月", command=self.prev_month).pack(side='left')
+        self.lbl_cal_title = tk.Label(header_frame, text="", font=('Arial', 16, 'bold'), bg='white')
+        self.lbl_cal_title.pack(side='left', expand=True)
+        tk.Button(header_frame, text="次月 >>", command=self.next_month).pack(side='right')
+
+        # カレンダー本体フレーム
+        self.cal_frame = tk.Frame(self.right_panel, bg='white')
+        self.cal_frame.pack(fill='both', expand=True) # 親に合わせて拡大
 
     def create_stat_label(self, title, var_name):
         tk.Label(self.left_panel, text=f"【{title}】", bg='#f0f0f0', fg='#555').pack(anchor='w')
         lbl = tk.Label(self.left_panel, text="¥0", font=('Arial', 14, 'bold'), fg='#2196F3', bg='#f0f0f0')
         lbl.pack(anchor='e', pady=(0, 10))
         setattr(self, f"lbl_{var_name}", lbl)
-        #≒"lbl_var_name = lbl
-        #なんでこんなめんどい書き方してるの？
-        #pythonは変数名を文字列から動的に作るのが基本出来ない。
-        #なので一度汎用変数名（lbl）でオブジェクトを作った後、setattr()で使いたい文字列にそのオブジェクトをぶち込むことで、
-        #どんだけ関数を回しても、引数の文字列が違えば、別のオブジェクトとして扱うことができる。
 
-    def update_next_shift(self):
-        row = self.db.get_next_shift()
+    def refresh_all(self):
+        self.draw_calendar()
+        self.update_stats()
+        self.update_next_shift()
 
-        if not row:
-            self.lbl_next_shift.config(text="予定なし")
-            return
+    def draw_calendar(self):
+        for widget in self.cal_frame.winfo_children():
+            widget.destroy()
 
-        # 表示は「MM/DD HH:MM」くらいが見やすい
-        date_str = row["date"]  # 'YYYY-MM-DD'
-        sp = row["start_plan"] or ""
+        self.lbl_cal_title.config(text=f"{self.year}年 {self.month}月")
 
-        try:
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            date_disp = d.strftime("%m/%d")
-        except ValueError:
-            date_disp = date_str
+        # 曜日ヘッダー
+        for i, day in enumerate(WEEK_DAYS):
+            fg_color = 'red' if i == 0 else 'blue' if i == 6 else 'black'
+            # 曜日ラベルも伸縮するように sticky='nsew' を指定
+            tk.Label(self.cal_frame, text=day, bg='#ddd', fg=fg_color).grid(row=0, column=i, sticky='nsew')
+            self.cal_frame.grid_columnconfigure(i, weight=1) # 横方向の伸縮許可
 
-        if sp.strip() == "":
-            self.lbl_next_shift.config(text=f"{date_disp} 予定なし")
-        else:
-            self.lbl_next_shift.config(text=f"{date_disp} {sp}")
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        cal_data = calendar.monthcalendar(self.year, self.month)
+        
+        start_date = f"{self.year}-{self.month:02d}-01"
+        _, last_day = calendar.monthrange(self.year, self.month)
+        end_date = f"{self.year}-{self.month:02d}-{last_day}"
+        shifts = {row['date']: row for row in self.db.get_shifts_by_range(start_date, end_date)}
+
+        for r, week in enumerate(cal_data):
+            self.cal_frame.grid_rowconfigure(r+1, weight=1) # 縦方向の伸縮許可
+            for c, day in enumerate(week):
+                if day == 0:
+                    continue
+                
+                date_str = f"{self.year}-{self.month:02d}-{day:02d}"
+                shift = shifts.get(date_str)
+                
+                bg_color = 'white'
+                if c == 0: bg_color = '#FFEBEE'
+                elif c == 6: bg_color = '#E3F2FD'
+                
+                # --- 表示テキストの改善（開始～終了を表示） ---
+                info_text = f"{day}\n"
+                if shift:
+                    if shift['start_actual'] and shift['end_actual']:
+                        bg_color = '#C8E6C9'
+                        # 改行して終了時間も表示
+                        info_text += f"実 {shift['start_actual']}\n～{shift['end_actual']}"
+                    elif shift['start_plan']:
+                        bg_color = '#BBDEFB'
+                        end_p = shift['end_plan'] if shift['end_plan'] else ""
+                        info_text += f"予 {shift['start_plan']}\n～{end_p}"
+
+                fg_color = 'black'
+                relief_style = 'flat'
+                border_width = 1
+                font_style = ('Arial', 9)
+
+                if date_str == today_str:
+                    fg_color = '#E65100'
+                    relief_style = 'solid'
+                    border_width = 2
+                    font_style = ('Arial', 10, 'bold')
+                    if not shift:
+                        bg_color = '#FFF9C4' 
+
+                btn = tk.Button(
+                    self.cal_frame, text=info_text, bg=bg_color, fg=fg_color,
+                    justify='left', anchor='nw',
+                    relief=relief_style, bd=border_width, font=font_style,
+                    command=lambda d=date_str: self.open_shift_dialog(d)
+                )
+                # ボタンを全方向に引き伸ばす
+                btn.grid(row=r+1, column=c, sticky='nsew', padx=1, pady=1)
+
+    def open_shift_dialog(self, date_str):
+        ShiftDialog(self, self.db, date_str, self.refresh_all)
+
+    def open_settings(self):
+        SettingsDialog(self, self.db)
 
     def update_stats(self):
-        rows = self.db.get_all_shifts()
-
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
         now = datetime.now()
-        ym = now.strftime("%Y-%m")  # 今月 'YYYY-MM'
-        y = now.strftime("%Y")      # 今年 'YYYY'
+        last_day = calendar.monthrange(now.year, now.month)[1]
+        start_month = f"{now.year}-{now.month:02d}-01"
+        end_month = f"{now.year}-{now.month:02d}-{last_day:02d}"
+        start_year = f"{now.year}-01-01"
+        end_year = f"{now.year}-12-31"
 
-        monthly = 0
-        yearly = 0
-        total = 0
+        cursor.execute("SELECT COALESCE(SUM(daily_pay), 0) FROM shifts WHERE date BETWEEN ? AND ?", (start_month, end_month))
+        monthly = cursor.fetchone()[0] or 0
 
-        for r in rows:
-            date_str = r["date"] or ""
-            pay = r["daily_pay"] if r["daily_pay"] is not None else 0
+        cursor.execute("SELECT COALESCE(SUM(daily_pay), 0) FROM shifts WHERE date BETWEEN ? AND ?", (start_year, end_year))
+        yearly = cursor.fetchone()[0] or 0
 
-            total += pay
-            if date_str.startswith(ym):
-                monthly += pay
-            if date_str.startswith(y):
-                yearly += pay
+        cursor.execute("SELECT COALESCE(SUM(daily_pay), 0) FROM shifts")
+        total = cursor.fetchone()[0] or 0
+        conn.close()
 
         self.lbl_monthly_pay.config(text=f"¥{monthly:,}")
         self.lbl_yearly_pay.config(text=f"¥{yearly:,}")
         self.lbl_total_pay.config(text=f"¥{total:,}")
 
     def recompute_all_daily_pay(self):
+        pay_calc = PayCalculator(self.db)
         rows = self.db.get_all_shifts()
-        if not rows:
-            return
+        pay_by_date = []
+        for row in rows:
+            pay_by_date.append((pay_calc.calculate_daily_pay(row), row['date']))
+        self.db.update_daily_pays(pay_by_date)
 
-        calc = PayCalculator(self.db)
-        updates = []
-
-        for r in rows:
-            # 実績が無い日は0円
-            daily_pay = calc.calculate_daily_pay(r)
-            updates.append((daily_pay, r["date"]))
-
-        self.db.update_daily_pays(updates)
-
-        def refresh_colender(self):
-            self.draw_calendar()
-        
-
-    def enter_shift(self, db):
-        Shift_Dialogue(self, db)
-        pass
+    def update_next_shift(self):
+        row = self.db.get_next_shift()
+        if row:
+            d = datetime.strptime(row['date'], '%Y-%m-%d')
+            wd_str = WEEK_DAYS[(d.weekday() + 1) % 7]
+            self.lbl_next_shift.config(text=f"{d.month}/{d.day}({wd_str}) {row['start_plan']}~")
+        else:
+            self.lbl_next_shift.config(text="予定なし")
 
     def prev_month(self):
         if self.month == 1:

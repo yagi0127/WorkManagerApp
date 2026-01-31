@@ -154,14 +154,17 @@ class DatabaseManager:
 class PayCalculator:
     def __init__(self, db):
         self.db = db
+        # 設定値を読み込み：１基本時給　２深夜割増　３休日追加時給
         self.hourly_wage = int(db.get_setting('hourly_wage'))
         self.night_rate = float(db.get_setting('night_rate'))
         self.holiday_add = int(db.get_setting('holiday_add'))
 
+    # 深夜料金が発生する時間がどれくらい重なってるかの計算
     def _get_overlap_minutes(self, start_dt, end_dt, range_start, range_end):
         """指定された期間(start_dt ~ end_dt)と、特定の時間帯(range)の重複分数を返す"""
         latest_start = max(start_dt, range_start)
         earliest_end = min(end_dt, range_end)
+        # 差分を秒で取得、その後分に変換し返す。
         delta = (earliest_end - latest_start).total_seconds()
         if delta > 0:
             return delta / 60
@@ -251,6 +254,8 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(self, text="基本時給 (円):").pack(**pad)
         self.wage_var = tk.StringVar(value=self.db.get_setting('hourly_wage'))
         tk.Entry(self, textvariable=self.wage_var).pack(**pad)
+        # pack(**pad)：事前に設定した引数を用いて渡す式
+
 
         tk.Label(self, text="深夜割増倍率 (例: 1.25):").pack(**pad)
         self.night_var = tk.StringVar(value=self.db.get_setting('night_rate'))
@@ -473,6 +478,11 @@ class MainApp(tk.Tk):
         lbl = tk.Label(self.left_panel, text="¥0", font=('Arial', 14, 'bold'), fg='#2196F3', bg='#f0f0f0')
         lbl.pack(anchor='e', pady=(0, 10))
         setattr(self, f"lbl_{var_name}", lbl)
+        #≒"lbl_var_name = lbl
+        #なんでこんなめんどい書き方してるの？
+        #pythonは変数名を文字列から動的に作るのが基本出来ない。
+        #なので一度汎用変数名（lbl）でオブジェクトを作った後、setattr()で使いたい文字列にそのオブジェクトをぶち込むことで、
+        #どんだけ関数を回しても、引数の文字列が違えば、別のオブジェクトとして扱うことができる。
 
     def refresh_all(self):
         self.draw_calendar()
